@@ -1,0 +1,11 @@
+v=0
+o=- 0 0 IN IP4 127.0.0.1
+s=RTSP to WebRTC
+c=IN IP4 127.0.0.1
+t=0 0
+a=tool:libavformat 60.16.100
+m=video 10077 RTP/AVP 101
+b=AS:2000
+a=rtpmap:101 H264/90000
+a=fmtp:101 packetization-mode=1; profile-level-id=42e01f; level-asymmetry-allowed=1
+a=ssrc:1111 cname:rtsp
