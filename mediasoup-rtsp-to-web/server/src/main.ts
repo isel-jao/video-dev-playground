@@ -12,12 +12,14 @@ import {
   Transport,
 } from "mediasoup/node/lib/types";
 import { spawn } from "child_process";
+import { getFFmpegArgs } from "./config/ffmpegArgs";
 
-const rtspUrl =
-  process.env.RTSP_URL ||
-  "rtsp://service:Next2899100*@197.230.172.128:553/stream2";
+const rtspUrls = [
+  "rtsp://197.230.172.128:555/user=admin_password=VoX4wnHy_channel=1_stream=0.sdp?real_stream",
+  "rtsp://service:Next2899100*@197.230.172.128:553/stream2",
+];
 
-const rtpPort = 10077;
+const rtpStartPort = 10077;
 
 const producerTransports: Map<string, Transport> = new Map();
 const consumerTransports: Map<string, Transport> = new Map();
@@ -41,15 +43,21 @@ async function main() {
   const worker = await createWorker();
   const router = await createRouter(worker);
 
-  const { producer, producerTransport, error } = await startRtspStream(router);
-  if (error) {
-    console.error("Error starting RTSP stream:", error);
-    process.exit(1);
-  }
+  for (const [index, rtspUrl] of rtspUrls.entries()) {
+    const { producer, producerTransport, error } = await startRtspStream(
+      router,
+      rtspUrl,
+      rtpStartPort + index
+    );
 
-  if (producer) {
-    producers.set(producer.id, producer);
-    producerTransports.set(producer.id, producerTransport);
+    if (error) {
+      console.error("Error starting RTSP stream:", error);
+    }
+
+    if (producer) {
+      producers.set(producer.id, producer);
+      producerTransports.set(producer.id, producerTransport);
+    }
   }
 
   httpServer.listen(env.PORT, () => {
@@ -200,11 +208,15 @@ main().catch((err) => {
   process.exit(1);
 });
 
-async function startRtspStream(router: Router) {
+async function startRtspStream(
+  router: Router,
+  rtspUrl: string,
+  rtpPort: number
+) {
   try {
     // Create the PlainTransport first with a specific port
     const producerTransport = await router.createPlainTransport({
-      listenIp: { ip: "0.0.0.0", announcedIp: "127.0.0.1" },
+      listenIp: { ip: "0.0.0.0", announcedIp: "192.168.11.32" },
       rtcpMux: true,
       comedia: true,
       port: rtpPort,
@@ -256,7 +268,7 @@ async function startRtspStream(router: Router) {
     });
 
     // Start FFmpeg after creating the producer
-    const ffmpeg = startFFmpeg();
+    const ffmpeg = startFFmpeg(rtspUrl, rtpPort);
 
     return { producer, producerTransport, error: null };
   } catch (error) {
@@ -265,45 +277,12 @@ async function startRtspStream(router: Router) {
   }
 }
 
-function startFFmpeg() {
+function startFFmpeg(rtspUrl: string, rtpPort: number) {
   console.log(`Starting ffmpeg to capture RTSP stream from ${rtspUrl}`);
   console.log(`Output RTP stream to port: ${rtpPort}`);
 
   const rtpUrl = `rtp://127.0.0.1:${rtpPort}`;
-  const ffmpegArgs = [
-    "-rtsp_transport",
-    "tcp",
-    "-i",
-    rtspUrl,
-    "-an", // No audio
-    "-c:v",
-    "libx264",
-    "-pix_fmt",
-    "yuv420p",
-    "-color_range",
-    "tv", // Explicitly set color range to fix warning
-    "-profile:v",
-    "baseline",
-    "-preset",
-    "ultrafast",
-    "-tune",
-    "zerolatency",
-    "-x264-params",
-    "keyint=60:min-keyint=60",
-    "-b:v",
-    "2M",
-    "-maxrate",
-    "2M", // Add maxrate to fix VBV warning
-    "-bufsize",
-    "2M",
-    "-f",
-    "rtp",
-    "-payload_type",
-    "101",
-    "-ssrc",
-    "1111",
-    rtpUrl,
-  ];
+  const ffmpegArgs = getFFmpegArgs({ rtpUrl, rtspUrl });
   console.log("FFmpeg command:", "ffmpeg", ffmpegArgs.join(" "));
   const ffmpeg = spawn("ffmpeg", ffmpegArgs);
 
@@ -311,15 +290,17 @@ function startFFmpeg() {
     console.log(`FFmpeg stdout: ${data}`);
   });
 
-  ffmpeg.stderr.on("data", (data) => {
-    console.log(`FFmpeg stderr: ${data.toString()}`);
-  });
+  // ffmpeg.stderr.on("data", (data) => {
+  //   console.log(`FFmpeg stderr: ${data.toString()}`);
+  // });
 
   ffmpeg.on("close", (code) => {
     console.log(`FFmpeg process exited with code ${code}`);
     if (code !== 0) {
       console.log("Attempting to reconnect...");
-      setTimeout(startFFmpeg, 5000);
+      setTimeout(() => {
+        startFFmpeg(rtspUrl, rtpPort);
+      }, 5000);
     }
   });
 

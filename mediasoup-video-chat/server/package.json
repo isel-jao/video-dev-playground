@@ -1,0 +1,33 @@
+{
+  "name": "typescript",
+  "version": "1.0.0",
+  "description": "",
+  "type": "commonjs",
+  "main": "dist/main.js",
+  "scripts": {
+    "dev": "pnpm nodemon",
+    "start": "node dist/main.js",
+    "build": "pnpm tsc"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "express": "^4.21.2",
+    "globals": "^15.14.0",
+    "nodemon": "^3.1.9",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.7.2"
+  },
+  "dependencies": {
+    "mediasoup": "^3.15.5",
+    "socket.io": "^4.8.1",
+    "zod": "^3.24.2"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "mediasoup"
+    ]
+  }
+}

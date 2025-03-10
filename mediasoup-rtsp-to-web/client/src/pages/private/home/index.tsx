@@ -6,56 +6,11 @@ import { Device } from "mediasoup-client";
 import {
   Consumer,
   ConsumerOptions,
-  ProducerOptions,
   RtpCapabilities,
   Transport,
   TransportOptions,
 } from "mediasoup-client/lib/types";
-
-const mediaStreamConstraints: MediaStreamConstraints = {
-  audio: false,
-  video: {
-    width: {
-      min: 640,
-      max: 1920,
-    },
-    height: {
-      min: 400,
-      max: 1080,
-    },
-  },
-};
-
-const params: ProducerOptions = {
-  encodings: [
-    {
-      rid: "r0",
-      maxBitrate: 100000,
-      scalabilityMode: "S1T3",
-    },
-    {
-      rid: "r1",
-      maxBitrate: 300000,
-      scalabilityMode: "S1T3",
-    },
-    {
-      rid: "r2",
-      maxBitrate: 900000,
-      scalabilityMode: "S1T3",
-    },
-  ],
-  codecOptions: {
-    videoGoogleStartBitrate: 1000,
-  },
-};
-
-async function getLocalStream() {
-  const stream = await navigator.mediaDevices.getUserMedia(
-    mediaStreamConstraints
-  );
-
-  return stream;
-}
+import { Maximize } from "lucide-react";
 
 async function getRtpCapabilities() {
   return new Promise<RtpCapabilities>((resolve) => {
@@ -86,52 +41,6 @@ async function createDevice(
   }
 }
 
-async function createSendTransport(device: Device) {
-  return new Promise<Transport>((resolve) => {
-    socket.emit(
-      "createSendTransport",
-      async (data: { params: TransportOptions }) => {
-        const producerTransport = device.createSendTransport(data.params);
-
-        producerTransport.on(
-          "connect",
-          async ({ dtlsParameters }, callback, errback) => {
-            try {
-              socket.emit("transport-connect", {
-                dtlsParameters,
-              });
-              callback();
-            } catch (error) {
-              errback(error as Error);
-            }
-          }
-        );
-
-        // Add produce event handler
-        producerTransport.on(
-          "produce",
-          async ({ kind, rtpParameters }, callback, errback) => {
-            try {
-              socket.emit(
-                "transport-produce",
-                {
-                  kind,
-                  rtpParameters,
-                },
-                ({ id }: { id: string }) => callback({ id })
-              );
-            } catch (error) {
-              errback(error as Error);
-            }
-          }
-        );
-
-        resolve(producerTransport);
-      }
-    );
-  });
-}
-
 async function createRecvTransport(device: Device) {
   return new Promise<Transport>((resolve) => {
     socket.emit("createRecvTransport", (data: { params: TransportOptions }) => {
@@ -150,20 +59,6 @@ async function createRecvTransport(device: Device) {
       resolve(recvTransport);
     });
   });
-}
-
-async function connectSendTransport(
-  producerTransport: Transport,
-  params: ProducerOptions
-) {
-  const producer = await producerTransport.produce(params);
-  producer.on("trackended", () => {
-    console.log("track ended");
-  });
-  producer.on("transportclose", () => {
-    console.log("transport ended");
-  });
-  return producer;
 }
 
 async function connectRecvTransport(
@@ -213,8 +108,7 @@ function ConsumerCard({
   deviceRef,
 }: ConsumerProps) {
   const consumerVideoRef = useRef<HTMLVideoElement>(null);
-
-  async function startConsume(id: string) {
+  async function startConsume() {
     if (!consumerVideoRef.current) {
       console.error("Consumer video ref is not connected");
       return;
@@ -234,7 +128,7 @@ function ConsumerCard({
     console.log("recvTransport", recvTransport);
 
     const consumer = await connectRecvTransport(
-      id,
+      producerId,
       recvTransport,
       deviceRef.current
     );
@@ -248,21 +142,38 @@ function ConsumerCard({
     consumerVideoRef.current.srcObject = new MediaStream([track]);
     consumerVideoRef.current.play();
   }
-
   async function stopConsume() {}
+
+  const toggleFullscreen = () => {
+    const video = consumerVideoRef.current as HTMLVideoElement;
+    if (video.requestFullscreen) {
+      video.requestFullscreen();
+    }
+  };
+
   return (
     <Card className={twMerge("p-4", className)}>
       <CardTitle>
         Consumer <br /> {producerId}
       </CardTitle>
-      <video
-        className="border w-full aspect-video rounded-lg bg-background/50"
-        ref={consumerVideoRef}
-      ></video>
+      <div className="relative w-full group">
+        <Button
+          variant="ghost"
+          className="absolute bottom-2 z-10 right-2 group-hover:opacity-100 opacity-20"
+          onClick={toggleFullscreen}
+        >
+          <Maximize />
+        </Button>
+
+        <video
+          className="border w-full aspect-video rounded-lg bg-background/50"
+          ref={consumerVideoRef}
+        ></video>
+      </div>
       <div className="flex [&>*]:flex-1 gap-4">
         <Button
           variant="outline"
-          onClick={() => startConsume(producerId)}
+          onClick={startConsume}
           // disabled={!producerVideoRef.current}
         >
           Start Consume
@@ -276,22 +187,20 @@ function ConsumerCard({
 }
 
 export default function HomePage() {
-  const producerVideoRef = useRef<HTMLVideoElement>(null);
-  const localStreamRef = useRef<MediaStream | null>(null);
   const rtpCapabilitiesRef = useRef<RtpCapabilities | null>(null);
   const deviceRef = useRef<Device | null>(null);
   const [producers, setProducers] = useState<string[]>([]);
 
   useEffect(() => {
-    async function getProducers() {
-      if (socket.connected) {
-        socket.emit("getProducers", setProducers);
-      } else {
-        socket.once("connect", () => {
-          socket.emit("getProducers", setProducers);
-        });
-      }
+    console.log({
+      connected: socket.connected,
+    });
+    if (socket.connected) {
+      socket.emit("getProducers", setProducers);
     }
+    socket.on("connect", () => {
+      socket.emit("getProducers", setProducers);
+    });
 
     socket.on("error", (error) => {
       console.error("Error connecting to server: ", error);
@@ -307,7 +216,10 @@ export default function HomePage() {
       setProducers((prev) => prev.filter((p) => p !== id));
     });
 
-    getProducers();
+    socket.on("disconnect", () => {
+      console.log("Socket disconnected");
+      setProducers([]);
+    });
 
     return () => {
       socket.off("error");
@@ -316,78 +228,9 @@ export default function HomePage() {
     };
   }, []);
 
-  async function startProduce() {
-    try {
-      // check if socket is connected
-      if (!socket.connected) {
-        console.error("Socket is not connected");
-        return;
-      }
-      if (!producerVideoRef.current) {
-        console.error("Producer video ref is not connected");
-        return;
-      }
-      // get local stream
-      localStreamRef.current = await getLocalStream();
-      producerVideoRef.current.srcObject = localStreamRef.current;
-      producerVideoRef.current.play();
-
-      // get rtpCapabilities from server
-      if (!rtpCapabilitiesRef.current) {
-        // get rtpCapabilities from server
-        rtpCapabilitiesRef.current = await getRtpCapabilities();
-      }
-      console.log("rtpCapabilities", rtpCapabilitiesRef.current);
-      if (!deviceRef.current) {
-        deviceRef.current = await createDevice(rtpCapabilitiesRef.current);
-        if (!deviceRef.current) {
-          console.error("Failed to create device");
-          return;
-        }
-      }
-      // create sentTransport
-      const sendTransport = await createSendTransport(deviceRef.current);
-      console.log("sendTransport", sendTransport);
-
-      const producer = await connectSendTransport(sendTransport, {
-        track: localStreamRef.current?.getTracks()[0],
-        ...params,
-      });
-      console.log("producer", producer);
-    } catch (error) {
-      console.error("Error starting produce: ", error);
-    }
-  }
-
-  async function stopProduce() {
-    // check if socket is connected
-    if (!socket.connected) {
-      console.error("Socket is not connected");
-      return;
-    }
-    // stop local stream
-    localStreamRef.current?.getTracks().forEach((track) => track.stop());
-    localStreamRef.current = null;
-  }
-
   return (
-    <main className="container flex flex-col p-6 gap-4">
-      <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-6">
-        <Card className="p-4">
-          <CardTitle>Producer</CardTitle>
-          <video
-            className="border w-full aspect-video rounded-lg bg-background/50"
-            ref={producerVideoRef}
-          ></video>
-          <div className="flex [&>*]:flex-1 gap-4">
-            <Button variant="outline" onClick={startProduce}>
-              Start Produce
-            </Button>
-            <Button variant="outline" onClick={stopProduce}>
-              Stop Produce
-            </Button>
-          </div>
-        </Card>
+    <main className="container flex flex-col p-6 gap-4 ">
+      <div className="grid xl:grid-cols-2 gap-6">
         {producers.map((id) => (
           <ConsumerCard
             key={id}
