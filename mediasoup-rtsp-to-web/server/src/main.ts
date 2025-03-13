@@ -5,14 +5,11 @@ import { env } from "./config/env";
 import { createWorker } from "./lib/worker";
 import { createRouter } from "./lib/router";
 import { createWebRtcTransport } from "./lib/webrtcTransport";
-import {
-  DtlsParameters,
-  Producer,
-  Router,
-  Transport,
-} from "mediasoup/node/lib/types";
+import { Producer, Router, Transport } from "mediasoup/node/lib/types";
 import { spawn } from "child_process";
 import { getFFmpegArgs } from "./config/ffmpegArgs";
+import { plainTransportOptions, rtpProducerOptions } from "./config/mediasoup";
+import { startFFmpeg } from "./lib/ffmpeg";
 
 const rtspUrls = [
   "rtsp://197.230.172.128:555/user=admin_password=VoX4wnHy_channel=1_stream=0.sdp?real_stream",
@@ -77,55 +74,6 @@ async function main() {
       producers.delete(socket.id);
       console.log("A user disconnected: ", socket.id);
     });
-
-    socket.on("createSendTransport", async (res) => {
-      try {
-        const transport = await createWebRtcTransport(router);
-        producerTransports.set(socket.id, transport);
-        res({
-          params: {
-            id: transport.id,
-            iceParameters: transport.iceParameters,
-            iceCandidates: transport.iceCandidates,
-            dtlsParameters: transport.dtlsParameters,
-          },
-        });
-      } catch (error) {
-        console.error("Error creating send transport: ", error);
-        res({ error: "Failed to create send transport" });
-      }
-    });
-
-    socket.on(
-      "transport-connect",
-      async ({ dtlsParameters }: { dtlsParameters: DtlsParameters }) => {
-        const transport = producerTransports.get(socket.id);
-        if (!transport) {
-          console.error("Transport not found");
-        }
-        transport.connect({ dtlsParameters });
-      }
-    );
-
-    socket.on(
-      "transport-produce",
-      async ({ kind, rtpParameters }, callback) => {
-        try {
-          const transport = producerTransports.get(socket.id);
-          if (!transport) {
-            throw new Error("Transport not found");
-          }
-          const producer = await transport.produce({ kind, rtpParameters });
-          producers.set(socket.id, producer);
-          // send the producer to everyone else
-          io.emit("producerAdded", { id: producer.id });
-          callback({ id: producer.id });
-        } catch (error) {
-          console.error(error);
-          callback({ error: "Failed to produce" });
-        }
-      }
-    );
 
     socket.on("getRtpCapabilities", (res) => res(router.rtpCapabilities));
 
@@ -215,12 +163,9 @@ async function startRtspStream(
 ) {
   try {
     // Create the PlainTransport first with a specific port
-    const producerTransport = await router.createPlainTransport({
-      listenIp: { ip: "0.0.0.0", announcedIp: "192.168.11.32" },
-      rtcpMux: true,
-      comedia: true,
-      port: rtpPort,
-    });
+    const options = plainTransportOptions;
+    options.port = rtpPort;
+    const producerTransport = await router.createPlainTransport(options);
     console.log("Producer transport created:", producerTransport.id);
 
     // Add event listeners for debugging
@@ -233,29 +178,7 @@ async function startRtspStream(
     });
 
     // Create the producer with the correct RTP parameters
-    const producer = await producerTransport.produce({
-      kind: "video",
-      rtpParameters: {
-        codecs: [
-          {
-            mimeType: "video/h264",
-            clockRate: 90000,
-            payloadType: 101,
-            parameters: {
-              "packetization-mode": 1,
-              "profile-level-id": "42e01f",
-              "level-asymmetry-allowed": 1,
-            },
-            rtcpFeedback: [
-              { type: "nack" },
-              { type: "nack", parameter: "pli" },
-              { type: "ccm", parameter: "fir" },
-            ],
-          },
-        ],
-        encodings: [{ ssrc: 1111 }],
-      },
-    });
+    const producer = await producerTransport.produce(rtpProducerOptions);
     console.log("Producer created with ID:", producer.id);
 
     // Add event listeners for debugging
@@ -275,34 +198,4 @@ async function startRtspStream(
     console.error("Error starting RTSP stream:", error);
     return { producer: null, producerTransport: null, error };
   }
-}
-
-function startFFmpeg(rtspUrl: string, rtpPort: number) {
-  console.log(`Starting ffmpeg to capture RTSP stream from ${rtspUrl}`);
-  console.log(`Output RTP stream to port: ${rtpPort}`);
-
-  const rtpUrl = `rtp://127.0.0.1:${rtpPort}`;
-  const ffmpegArgs = getFFmpegArgs({ rtpUrl, rtspUrl });
-  console.log("FFmpeg command:", "ffmpeg", ffmpegArgs.join(" "));
-  const ffmpeg = spawn("ffmpeg", ffmpegArgs);
-
-  ffmpeg.stdout.on("data", (data) => {
-    console.log(`FFmpeg stdout: ${data}`);
-  });
-
-  // ffmpeg.stderr.on("data", (data) => {
-  //   console.log(`FFmpeg stderr: ${data.toString()}`);
-  // });
-
-  ffmpeg.on("close", (code) => {
-    console.log(`FFmpeg process exited with code ${code}`);
-    if (code !== 0) {
-      console.log("Attempting to reconnect...");
-      setTimeout(() => {
-        startFFmpeg(rtspUrl, rtpPort);
-      }, 5000);
-    }
-  });
-
-  return ffmpeg;
 }
